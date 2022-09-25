@@ -1,5 +1,7 @@
 #![no_std]
 
+use core::ops::Shr;
+
 /// A single bit of a bitmask filter.
 ///
 /// A Set bit will match only a set bit, a Reset bit will match only a reset bit, and Any
@@ -35,6 +37,11 @@ impl<const EXACT: bool> From<u32> for Selector<EXACT> {
         (value as u8).into()
     }
 }
+impl<const EXACT: bool> From<u64> for Selector<EXACT> {
+    fn from(value: u64) -> Self {
+        (value as u8).into()
+    }
+}
 
 impl<const EXACT: bool> Selector<EXACT> {
     pub fn into_value(&self) -> bool {
@@ -63,6 +70,7 @@ impl<const EXACT: bool, const N: usize> BitSelector<EXACT, N> {
     pub fn new(bits: [Selector<EXACT>; N]) -> Self {
         Self { bits }
     }
+    /// Create a new selector that matches any value.
     pub fn new_any() -> Self {
         Self {
             bits: [Selector::Any; N],
@@ -70,46 +78,30 @@ impl<const EXACT: bool, const N: usize> BitSelector<EXACT, N> {
     }
 }
 
-pub trait BitSelectorNewExact<T, const EXACT: bool, const N: usize> {
-    fn new_exact(value: T) -> BitSelector<EXACT, N>;
-}
-
-impl<const EXACT: bool> BitSelectorNewExact<u16, EXACT, 11> for BitSelector<EXACT, 11> {
-    fn new_exact(mut value: u16) -> BitSelector<EXACT, 11> {
-        let mut bits = [Selector::Any; 11];
-
-        for bit in bits.iter_mut() {
-            *bit = value.into();
-            value >>= 1;
-        }
-
-        Self { bits }
-    }
-}
-impl<const EXACT: bool> BitSelectorNewExact<u8, EXACT, 8> for BitSelector<EXACT, 8> {
-    fn new_exact(mut value: u8) -> BitSelector<EXACT, 8> {
-        let mut bits = [Selector::Any; 8];
+/// A trait to convert a value into a selector of a specified size that exactly matches the value.
+///
+/// This will convert type T into a selector of size N bits. The EXACT is forwarded to the
+/// selector and it's meaning is further explained in the selector docs.
+pub trait BitSelectorNewExact<T, const EXACT: bool, const N: usize>
+where
+    T: Into<Selector<EXACT>> + Shr<u8, Output = T> + Copy,
+{
+    /// Create a new selector that matches exactly the given value.
+    fn new_exact(mut value: T) -> BitSelector<EXACT, N> {
+        let mut bits = [Selector::Any; N];
 
         for bit in bits.iter_mut() {
             *bit = value.into();
-            value >>= 1;
+            value = value >> 1;
         }
 
-        Self { bits }
+        BitSelector { bits }
     }
 }
-impl<const EXACT: bool> BitSelectorNewExact<u8, EXACT, 1> for BitSelector<EXACT, 1> {
-    fn new_exact(mut value: u8) -> BitSelector<EXACT, 1> {
-        let mut bits = [Selector::Any; 1];
 
-        for bit in bits.iter_mut() {
-            *bit = value.into();
-            value >>= 1;
-        }
-
-        Self { bits }
-    }
-}
+impl<const EXACT: bool> BitSelectorNewExact<u16, EXACT, 11> for BitSelector<EXACT, 11> {}
+impl<const EXACT: bool> BitSelectorNewExact<u8, EXACT, 8> for BitSelector<EXACT, 8> {}
+impl<const EXACT: bool> BitSelectorNewExact<u8, EXACT, 1> for BitSelector<EXACT, 1> {}
 
 /// Trait to convert selector type into values and masks.
 trait SelectorInto<T> {
@@ -145,6 +137,26 @@ impl<const EXACT: bool> SelectorInto<u8> for [Selector<EXACT>] {
         mask
     }
 }
+impl<const EXACT: bool> core::fmt::Display for Selector<EXACT> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let b_str = match self {
+            Selector::Any => "x",
+            Selector::Reset => "0",
+            Selector::Set => "1",
+        };
+        write!(f, "{}", b_str)
+    }
+}
+
+impl<const EXACT: bool, const N: usize> core::fmt::Display for BitSelector<EXACT, N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "BitSelector<{}>: 0b", self.bits.len())?;
+        for bit in self.bits.iter().rev() {
+            write!(f, "{}", bit)?;
+        }
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 #[macro_use]
@@ -152,10 +164,10 @@ extern crate std;
 
 #[cfg(test)]
 mod tests {
-    use crate::{BitSelector, Selector, SelectorInto};
+    use crate::{BitSelector, BitSelectorNewExact, Selector, SelectorInto};
 
     #[test]
-    fn bit_selector_example() {
+    fn bit_selector_new() {
         let filter: BitSelector<false, 8> = BitSelector::new([
             Selector::Reset,
             Selector::Set,
@@ -172,6 +184,28 @@ mod tests {
 
         assert!(value == 0b01011010);
         assert!(mask == 0b10000100);
+    }
+
+    #[test]
+    fn bit_selector_new_any() {
+        let filter: BitSelector<false, 8> = BitSelector::new_any();
+
+        let value = filter.bits[0..8].to_value();
+        let mask = filter.bits[0..8].to_mask();
+
+        assert!(value == 0b00000000);
+        assert!(mask == 0b11111111);
+    }
+
+    #[test]
+    fn bit_selector_new_exact() {
+        let filter: BitSelector<false, 8> = BitSelector::new_exact(0b10101111);
+
+        let value = filter.bits[0..8].to_value();
+        let mask = filter.bits[0..8].to_mask();
+
+        assert!(value == 0b10101111);
+        assert!(mask == 0b00000000);
     }
 
     #[test]
@@ -204,9 +238,6 @@ mod tests {
 
         let value = s.bits[0..8].to_value();
         let mask = s.bits[0..8].to_mask();
-
-        println!("Value: {:?}", value);
-        println!("Mask: {:?}", mask);
 
         assert!(value == 0);
         assert!(mask == 0xff);
@@ -269,5 +300,22 @@ mod tests {
 
         assert!(value == 0b00000011);
         assert!(mask == 0b11111100);
+    }
+
+    #[test]
+    fn display_format() {
+        let s: BitSelector<false, 8> = BitSelector::new([
+            Selector::Set,
+            Selector::Set,
+            Selector::Any,
+            Selector::Any,
+            Selector::Reset,
+            Selector::Any,
+            Selector::Any,
+            Selector::Any,
+        ]);
+        let format_string = format!("{}", s);
+
+        assert!(format_string == "BitSelector<8>: 0bxxx0xx11");
     }
 }
